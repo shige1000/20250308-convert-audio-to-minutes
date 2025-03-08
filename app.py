@@ -5,118 +5,119 @@ import os
 from pydub import AudioSegment
 from datetime import timedelta
 import torch
-from concurrent.futures import ThreadPoolExecutor
-import numpy as np
-from scipy.signal import wiener
+from typing import Dict, List, Any
+from pydub.exceptions import CouldntDecodeError
 
 
-# Streamlitの設定
 st.title("音声書き起こしアプリ")
 st.write("音声/動画ファイルをアップロードすると、書き起こしを行います。")
 
 
-def enhance_audio(audio_segment):
-    """音声の品質を改善"""
-    # 音量の正規化
-    audio_segment = audio_segment.normalize()
+def convert_to_wav(input_file: Any, temp_path: str) -> None:
+    """動画/音声ファイルをWAVに変換して前処理
 
-    # 音声データをnumpy配列に変換
-    samples = np.array(audio_segment.get_array_of_samples())
+    Args:
+        input_file: 入力ファイル（Streamlitのアップロードファイル）
+        temp_path: 一時保存するWAVファイルのパス
+    """
+    try:
+        # 音声ファイルを読み込み
+        audio: AudioSegment = AudioSegment.from_file(input_file)
 
-    # Wienerフィルタでノイズ削減
-    enhanced_samples = wiener(samples)
+        # Whisperモデルの要件に合わせて音声を変換
+        audio = audio.set_channels(1)  # モノラルに変換
+        audio = audio.set_frame_rate(16000)  # 16kHzにサンプリングレート変換
+        audio = audio.set_sample_width(2)  # 16ビットに設定
 
-    # 音声データを再構築
-    enhanced_audio = audio_segment._spawn(enhanced_samples.astype(np.int16))
-    return enhanced_audio
+        # 音量の正規化
+        audio = audio.normalize()
+
+        # WAVファイルとして保存（FFmpegパラメータを明示的に指定）
+        audio.export(
+            temp_path,
+            format="wav",
+            parameters=[
+                "-ac", "1",  # モノラル
+                "-ar", "16000",  # 16kHz
+                "-acodec", "pcm_s16le",  # 16ビットPCM
+                "-loglevel", "error"  # FFmpegのログレベルを制限
+            ]
+        )
+    except Exception as e:
+        st.error(f"音声変換中にエラーが発生しました: {str(e)}")
+        raise
 
 
-def convert_to_wav(input_file, temp_path):
-    """動画/音声ファイルをWAVに変換して前処理"""
-    audio = AudioSegment.from_file(input_file)
+def format_time(seconds: int) -> str:
+    """秒数を時:分:秒の形式に変換
 
-    # 音声の品質改善
-    enhanced_audio = enhance_audio(audio)
-    enhanced_audio.export(temp_path, format="wav")
+    Args:
+        seconds: 変換する秒数
 
-
-def format_time(seconds):
-    """秒数を時:分:秒の形式に変換"""
+    Returns:
+        str: HH:MM:SS形式の文字列
+    """
     return str(timedelta(seconds=seconds)).split('.')[0]
 
 
-def transcribe_segment(segment_path, model):
-    """音声セグメントの書き起こし"""
-    return model.transcribe(
-        segment_path,
-        language="ja",
-        task="transcribe",
-        word_timestamps=True
-    )
+def process_audio(audio_file: Any) -> Dict[str, List[Dict[str, Any]]]:
+    """音声処理のメイン関数
 
+    Args:
+        audio_file: Streamlitでアップロードされた音声ファイル
 
-def process_audio(audio_file):
-    """音声処理のメイン関数"""
+    Returns:
+        Dict[str, List[Dict[str, Any]]]: 書き起こし結果のセグメントリスト
+
+    Raises:
+        Exception: 音声処理中に発生したエラー
+    """
     # GPUが利用可能な場合は使用
     device = "cuda" if torch.cuda.is_available() else "cpu"
     st.info(f"使用デバイス: {device}")
 
     # 一時ファイルの作成
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
-        temp_path = temp_audio.name
-        # 入力ファイルをWAVに変換
-        convert_to_wav(audio_file, temp_path)
-
+        temp_path: str = temp_audio.name
         try:
-            # Whisperモデルの読み込み（mediumモデルを使用）
-            model = whisper.load_model("medium", device=device)
+            # 入力ファイルをWAVに変換
+            try:
+                convert_to_wav(audio_file, temp_path)
+            except CouldntDecodeError:
+                raise Exception("ファイルの形式が正しくないか、破損している可能性があります。")
+            except Exception as e:
+                raise Exception(f"音声ファイルの変換中にエラーが発生しました: {str(e)}")
 
-            # 音声ファイルを30秒のセグメントに分割
-            audio = AudioSegment.from_wav(temp_path)
-            segment_length = 30 * 1000  # 30秒
-            segments = []
+            # Whisperモデルの読み込み
+            try:
+                # tiny (39M パラメータ)
+                # base (74M パラメータ)
+                # small (244M パラメータ)
+                # medium (769M パラメータ)
+                # large (1550M パラメータ)
+                model: whisper.Whisper = whisper.load_model("tiny", device=device)
+            except Exception as e:
+                raise Exception(f"Whisperモデルの読み込み中にエラーが発生しました: {str(e)}")
 
-            for i in range(0, len(audio), segment_length):
-                segment = audio[i:i + segment_length]
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_segment:
-                    segment.export(temp_segment.name, format="wav")
-                    segments.append(temp_segment.name)
+            # 音声ファイルを直接Whisperで処理
+            try:
+                result = model.transcribe(
+                    temp_path,
+                    language="ja",
+                    task="transcribe",
+                    word_timestamps=True
+                )
+                return {"segments": result["segments"]}
 
-            # 並列処理で書き起こし
-            results = []
-            with ThreadPoolExecutor() as executor:
-                futures = [
-                    executor.submit(transcribe_segment, segment_path, model)
-                    for segment_path in segments
-                ]
-
-                # プログレスバーの表示
-                progress_bar = st.progress(0)
-                for i, future in enumerate(futures):
-                    result = future.result()
-                    results.append(result)
-                    progress_bar.progress((i + 1) / len(futures))
-
-            # 結果の統合
-            combined_segments = []
-            time_offset = 0
-            for result in results:
-                for segment in result["segments"]:
-                    segment["start"] += time_offset
-                    segment["end"] += time_offset
-                    combined_segments.append(segment)
-                time_offset += 30  # 30秒ずつオフセット
-
-            return {"segments": combined_segments}
+            except Exception as e:
+                raise Exception(f"音声処理中にエラーが発生しました: {str(e)}")
 
         finally:
             # 一時ファイルの削除
-            os.unlink(temp_path)
-            for segment_path in segments:
-                try:
-                    os.unlink(segment_path)
-                except:
-                    pass
+            try:
+                os.unlink(temp_path)
+            except Exception as e:
+                st.warning(f"一時ファイルの削除中にエラーが発生しました: {str(e)}")
 
 
 # ファイルアップローダーの表示
@@ -129,21 +130,21 @@ uploaded_file = st.file_uploader(
 if uploaded_file:
     with st.spinner('書き起こし処理中...'):
         try:
-            result = process_audio(uploaded_file)
+            result: Dict[str, List[Dict[str, Any]]] = process_audio(uploaded_file)
 
             # 結果の表示
             st.subheader("書き起こし結果")
 
             # セグメントごとに表示
             for segment in result["segments"]:
-                start_time = format_time(int(segment["start"]))
-                end_time = format_time(int(segment["end"]))
-                text = segment["text"].strip()
+                start_time: str = format_time(int(segment["start"]))
+                end_time: str = format_time(int(segment["end"]))
+                text: str = segment["text"].strip()
 
                 st.markdown(f"**[{start_time} - {end_time}]** {text}")
 
             # テキスト全体のダウンロードボタン
-            full_text = "\n".join([
+            full_text: str = "\n".join([
                 f"[{format_time(int(segment['start']))} - {format_time(int(segment['end']))}] {segment['text'].strip()}"
                 for segment in result["segments"]
             ])
