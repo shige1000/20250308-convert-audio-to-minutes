@@ -14,7 +14,8 @@ st.write("音声/動画ファイルをアップロードすると、書き起こ
 
 
 def convert_to_wav(input_file: Any, temp_path: str) -> None:
-    """動画/音声ファイルをWAVに変換して前処理
+    """
+    動画/音声ファイルをWAVに変換して前処理
 
     Args:
         input_file: 入力ファイル（Streamlitのアップロードファイル）
@@ -49,7 +50,8 @@ def convert_to_wav(input_file: Any, temp_path: str) -> None:
 
 
 def format_time(seconds: int) -> str:
-    """秒数を時:分:秒の形式に変換
+    """
+    秒数を時:分:秒の形式に変換
 
     Args:
         seconds: 変換する秒数
@@ -61,7 +63,8 @@ def format_time(seconds: int) -> str:
 
 
 def process_audio(audio_file: Any) -> Dict[str, List[Dict[str, Any]]]:
-    """音声処理のメイン関数
+    """
+    音声処理のメイン関数
 
     Args:
         audio_file: Streamlitでアップロードされた音声ファイル
@@ -88,19 +91,19 @@ def process_audio(audio_file: Any) -> Dict[str, List[Dict[str, Any]]]:
             except Exception as e:
                 raise Exception(f"音声ファイルの変換中にエラーが発生しました: {str(e)}")
 
-            # Whisperモデルの読み込み
             try:
+                # Whisperモデルの読み込み
                 # tiny (39M パラメータ)
                 # base (74M パラメータ)
                 # small (244M パラメータ)
                 # medium (769M パラメータ)
                 # large (1550M パラメータ)
-                model: whisper.Whisper = whisper.load_model("tiny", device=device)
+                model: whisper.Whisper = whisper.load_model("medium", device=device)
             except Exception as e:
                 raise Exception(f"Whisperモデルの読み込み中にエラーが発生しました: {str(e)}")
 
-            # 音声ファイルを直接Whisperで処理
             try:
+                # 音声ファイルを直接を処理
                 result = model.transcribe(
                     temp_path,
                     language="ja",
